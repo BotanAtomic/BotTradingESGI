@@ -164,7 +164,7 @@ class BinanceBot:
 
 def run_server(name):
     print(F"Starting web server on thread {name}")
-    server_address = ('', 80)
+    server_address = ('', 8080)
     httpd = HTTPServer(server_address, BaseHTTPRequestHandler)
     httpd.serve_forever()
 
