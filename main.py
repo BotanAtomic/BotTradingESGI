@@ -1,4 +1,6 @@
 import os
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from io import UnsupportedOperation
 
 from binance.client import Client
@@ -160,7 +162,16 @@ class BinanceBot:
         self.websocket.start_kline_socket(self.symbol, self.kline_callback, self.interval)
 
 
+def run_server(name):
+    print(F"Starting web server on thread {name}")
+    server_address = ('', 80)
+    httpd = HTTPServer(server_address, BaseHTTPRequestHandler)
+    httpd.serve_forever()
+
+
 if __name__ == '__main__':
+    threading.Thread(target=run_server, args=(1,)).start()
+
     bot = BinanceBot(
         os.getenv("BINANCE_KEY"),
         os.getenv("BINANCE_SECRET"),
