@@ -5,6 +5,7 @@ from binance.enums import *
 from binance.websockets import BinanceSocketManager
 import pandas as pd
 import numpy as np
+from datetime import datetime
 
 from ta.momentum import RSIIndicator
 from ta.trend import EMAIndicator
@@ -16,34 +17,53 @@ TREND_BEARISH = 2
 TRENDS_NAME = ["RANGE", "BULLISH", "BEARISH"]
 
 
+def is_crossing_down(df, first_key, second_key):
+    return df[first_key].iloc[-1] > df[second_key].iloc[-1] and df[first_key].iloc[-2] <= df[second_key].iloc[-2]
+
+
+def is_crossing_up(df, first_key, second_key):
+    return df[first_key].iloc[-1] > df[second_key].iloc[-1] and df[first_key].iloc[-2] <= df[second_key].iloc[-2]
+
+
 class BinanceBot:
 
-    def __init__(self, api_key, api_secret, coin, interval):
+    def __init__(self, api_key, api_secret, symbol, interval):
         self.client: Client = Client(api_key, api_secret)
-        self.websocket = BinanceSocketManager(self.client)
-        self.coin = coin
+        self.websocket: BinanceSocketManager = BinanceSocketManager(self.client)
+        self.symbol = symbol
         self.interval = interval
         self.trend = TREND_RANGE
         self.data = pd.DataFrame()
+        self.websocket.start()
 
     def start(self):
-        print(F"Initializing bot on {self.coin} with TF: {self.interval}")
+        print(F"Initializing bot on {self.symbol} with TF: {self.interval} [{datetime.now()}]")
         self.initialize_candles()
+        self.define_trend()
+        self.start_websocket()
+        self.on_update()
+
+    def on_update(self):
+        if is_crossing_up(self.data, "ema_8", "ema_21"):
+            print(F"{datetime.now()} EMA IS CROSSING UP!")
+        elif is_crossing_down(self.data, "ema_8", "ema_21"):
+            print(F"{datetime.now()} EMA IS CROSSING DOWN!")
 
     def define_trend(self):
-        trend_line = self.data.tail(1)["ema_55"].item()
-        current_price = self.data.tail(1)["close"].item()
-        if ((abs(trend_line - current_price)/current_price) * 100) < 1.5:
+        trend_line = self.data["ema_55"].iloc[-1].item()
+        current_price = self.data["close"].iloc[-1].item()
+        percent = ((abs(trend_line - current_price) / current_price) * 100)
+        if percent < 1.0:
             self.trend = TREND_RANGE
         elif trend_line > current_price:
             self.trend = TREND_BEARISH
         else:
             self.trend = TREND_BULLISH
-        print(F"Current trend is : {TRENDS_NAME[self.trend]}")
+        print(F"Current trend is : {TRENDS_NAME[self.trend]} [{trend_line}, {current_price}, {percent}]")
 
     def initialize_candles(self):
         dates, opens, highs, lows, closes, volumes = [], [], [], [], [], []
-        candles = self.client.get_klines(symbol=self.coin, interval=self.interval)
+        candles = self.client.get_klines(symbol=self.symbol, interval=self.interval, limit=56)
         for candle in candles:
             dates.append(candle[0])
             opens.append(candle[1])
@@ -58,12 +78,30 @@ class BinanceBot:
         self.data['low'] = np.array(lows).astype(np.float)
         self.data['close'] = np.array(closes).astype(np.float)
         self.data['volume'] = np.array(volumes).astype(np.float)
+        self.calculate_ta()
+        print(F"Successfully loaded {len(self.data)} candles")
+
+    def calculate_ta(self):
         self.data['rsi'] = RSIIndicator(close=self.data["close"], n=14).rsi()
-        self.data["ema_9"] = EMAIndicator(close=self.data["close"], n=8).ema_indicator()
+        self.data["ema_8"] = EMAIndicator(close=self.data["close"], n=8).ema_indicator()
         self.data["ema_21"] = EMAIndicator(close=self.data["close"], n=21).ema_indicator()
         self.data["ema_55"] = EMAIndicator(close=self.data["close"], n=55).ema_indicator()
-        print(F"Successfully loaded {len(self.data)} candles")
-        self.define_trend()
+
+    def kline_callback(self, msg):
+        if msg['k']['x']:
+            df = pd.DataFrame()
+            df['date'] = [msg['k']['T']]
+            df['open'] = np.array([msg['k']['o']]).astype(np.float)
+            df['high'] = np.array([msg['k']['h']]).astype(np.float)
+            df['low'] = np.array([msg['k']['l']]).astype(np.float)
+            df['close'] = np.array([msg['k']['c']]).astype(np.float)
+            df['volume'] = np.array([msg['k']['v']]).astype(np.float)
+            self.data = self.data.append(df, ignore_index=True)
+            self.calculate_ta()
+            self.define_trend()
+
+    def start_websocket(self):
+        self.websocket.start_kline_socket(self.symbol, self.kline_callback, self.interval)
 
 
 if __name__ == '__main__':
@@ -71,7 +109,7 @@ if __name__ == '__main__':
         os.getenv("BINANCE_KEY"),
         os.getenv("BINANCE_SECRET"),
         "ETHUSDT",
-        KLINE_INTERVAL_15MINUTE
+        KLINE_INTERVAL_1MINUTE
     )
 
     bot.start()
