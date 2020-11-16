@@ -119,7 +119,7 @@ class BinanceBot:
 
     def initialize_candles(self):
         dates, opens, highs, lows, closes, volumes = [], [], [], [], [], []
-        candles = self.client.get_klines(symbol=self.symbol, interval=self.interval, limit=56)
+        candles = self.client.get_klines(symbol=self.symbol, interval=self.interval, limit=100)
         for candle in candles:
             dates.append(candle[0])
             opens.append(candle[1])
