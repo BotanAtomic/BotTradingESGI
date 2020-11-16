@@ -1,4 +1,5 @@
 import os
+from io import UnsupportedOperation
 
 from binance.client import Client
 from binance.enums import *
@@ -12,9 +13,9 @@ from ta.momentum import RSIIndicator
 from ta.trend import EMAIndicator
 import json
 
-TREND_RANGE = 0
-TREND_BULLISH = 1
-TREND_BEARISH = 2
+RANGE = 0
+BULLISH = 1
+BEARISH = 2
 
 TRENDS_NAME = ["RANGE", "BULLISH", "BEARISH"]
 
@@ -34,7 +35,12 @@ def save_order(order, filename):
 
 
 def read_order(filename):
-    return json.load(open(filename, 'w'))
+    if os.path.exists(filename):
+        try:
+            return json.load(open(filename, 'w'))
+        except UnsupportedOperation:
+            return None
+    return None
 
 
 order_filename = "last_order.json"
@@ -47,14 +53,15 @@ class BinanceBot:
         self.websocket: BinanceSocketManager = BinanceSocketManager(self.client)
         self.symbol = symbol
         self.interval = interval
-        self.trend = TREND_RANGE
+        self.trend = RANGE
         self.data: pd.DataFrame = pd.DataFrame()
         self.websocket.start()
-        self.quantity = 10
+        self.balance = 10
         self.lastOrder = read_order(order_filename)
 
     def start(self):
-        print(F"Initializing bot on {self.symbol} with TF: {self.interval} [{datetime.now()}]\n")
+        print(F"[{datetime.now()}]: initializing bot on {self.symbol} with TF: {self.interval}, "
+              F"last order: {self.lastOrder} \n")
         self.update_account_balance()
         self.cancel_open_orders()
         self.initialize_candles()
@@ -63,42 +70,50 @@ class BinanceBot:
     def cancel_open_orders(self):
         open_orders = self.client.get_open_orders(symbol=self.symbol)
         for order in open_orders:
-            self.client.cancel_order(symbol=self.symbol, clientId=order['clientId'])
+            save_order(order, order_filename)
+            self.client.cancel_order(symbol=self.symbol, orderId=order['orderId'])
         if len(open_orders) > 0:
             print(F"Cancel {len(open_orders)} orders")
 
     def on_update(self):
         try:
-            if is_crossing_up(self.data, "ema_8", "ema_21"):
+            if is_crossing_up(self.data, "ema_8", "ema_21") \
+                    and self.lastOrder is None and self.trend is not BEARISH:
                 self.lastOrder = self.client.create_order(symbol=self.symbol, side=SIDE_BUY, type=ORDER_TYPE_MARKET,
-                                                          quoteOrderQty=self.quantity,
-                                                          newOrderRespType=ORDER_RESP_TYPE_FULL)
+                                                          quoteOrderQty=self.balance,
+                                                          newOrderRespType=ORDER_RESP_TYPE_RESULT)
                 save_order(self.lastOrder, order_filename)
-                print(F"{datetime.now()}: buying {self.lastOrder}")
-            elif is_crossing_down(self.data, "ema_8", "ema_21") and self.lastOrder is not None:
-                sell_order = self.client.create_order(symbol=self.symbol, side=SIDE_SELL, type=ORDER_TYPE_MARKET,
-                                                      quantity=self.lastOrder.executedQty)
-                print(F"{datetime.now()} selling position {sell_order}")
+                print(F"{datetime.now()} BUY: {self.lastOrder}")
+            elif is_crossing_down(self.data, "ema_8", "ema_21") \
+                    and self.lastOrder is not None and self.trend is not BULLISH:
+                self.client.create_order(symbol=self.symbol, side=SIDE_SELL, type=ORDER_TYPE_MARKET,
+                                         quantity=self.lastOrder['executedQty'])
+                lastBalance = self.balance
                 self.lastOrder = None
                 self.update_account_balance()
-        except BinanceAPIException as e:
+                print(F"[{datetime.now()}] SELL, P&L: {self.balance - lastBalance}$")
+
+        except Exception as e:
             print("Error: ", e)
 
     def update_account_balance(self):
-        self.quantity = self.client.get_asset_balance("USDT")['free']
-        print(F"Account balance: {self.quantity}$")
+        self.balance = self.client.get_asset_balance("USDT")['free']
+        print(F"Account balance: {self.balance}$")
 
     def define_trend(self):
+        last_trend = self.trend
         trend_line = self.data["ema_55"].iloc[-1].item()
         current_price = self.data["close"].iloc[-1].item()
         percent = ((abs(trend_line - current_price) / current_price) * 100)
         if percent < 0.3:
-            self.trend = TREND_RANGE
+            self.trend = RANGE
         elif trend_line > current_price:
-            self.trend = TREND_BEARISH
+            self.trend = BEARISH
         else:
-            self.trend = TREND_BULLISH
-        print(F"Current trend is : {TRENDS_NAME[self.trend]} [{trend_line}, {current_price}, {percent}]")
+            self.trend = BULLISH
+
+        if last_trend is not self.trend:
+            print(F"Trend change : {TRENDS_NAME[self.trend]}")
 
     def initialize_candles(self):
         dates, opens, highs, lows, closes, volumes = [], [], [], [], [], []
@@ -150,7 +165,7 @@ if __name__ == '__main__':
         os.getenv("BINANCE_KEY"),
         os.getenv("BINANCE_SECRET"),
         "ETHUSDT",
-        KLINE_INTERVAL_1MINUTE
+        KLINE_INTERVAL_15MINUTE
     )
 
     bot.start()
