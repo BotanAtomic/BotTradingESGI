@@ -1,11 +1,9 @@
 import os
 import threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
 from io import UnsupportedOperation
 
 from binance.client import Client
 from binance.enums import *
-from binance.exceptions import BinanceAPIException
 from binance.websockets import BinanceSocketManager
 import pandas as pd
 import numpy as np
@@ -15,11 +13,9 @@ from ta.momentum import RSIIndicator
 from ta.trend import EMAIndicator
 import json
 
-RANGE = 0
-BULLISH = 1
-BEARISH = 2
-
-TRENDS_NAME = ["RANGE", "BULLISH", "BEARISH"]
+from const import *
+from logger import Logger
+from server import HttpServer
 
 
 def is_crossing_down(df, first_key, second_key):
@@ -50,20 +46,20 @@ order_filename = "last_order.json"
 
 class BinanceBot:
 
-    def __init__(self, api_key, api_secret, symbol, interval):
+    def __init__(self, api_key, api_secret, symbol, interval, logger):
         self.client: Client = Client(api_key, api_secret)
         self.websocket: BinanceSocketManager = BinanceSocketManager(self.client)
         self.symbol = symbol
         self.interval = interval
-        self.trend = RANGE
+        self.trend = SIDEWAYS
+        self.logger = logger
         self.data: pd.DataFrame = pd.DataFrame()
         self.websocket.start()
         self.balance = 10
         self.lastOrder = read_order(order_filename)
 
     def start(self):
-        print(F"[{datetime.now()}]: initializing bot on {self.symbol} with TF: {self.interval}, "
-              F"last order: {self.lastOrder} \n")
+        self.logger.init_log(F"starting bot {self.symbol} with TF: {self.interval}")
         self.update_account_balance()
         self.cancel_open_orders()
         self.initialize_candles()
@@ -75,7 +71,7 @@ class BinanceBot:
             save_order(order, order_filename)
             self.client.cancel_order(symbol=self.symbol, orderId=order['orderId'])
         if len(open_orders) > 0:
-            print(F"Cancel {len(open_orders)} orders")
+            self.logger.init_log(F"cancel {len(open_orders)} open orders")
 
     def on_update(self):
         try:
@@ -85,22 +81,23 @@ class BinanceBot:
                                                           quoteOrderQty=self.balance,
                                                           newOrderRespType=ORDER_RESP_TYPE_RESULT)
                 save_order(self.lastOrder, order_filename)
-                print(F"{datetime.now()} BUY: {self.lastOrder}")
+                self.logger.buy_log(self.lastOrder['price'], self.lastOrder['executedQty'])
             elif is_crossing_down(self.data, "ema_8", "ema_21") \
                     and self.lastOrder is not None and self.trend is not BULLISH:
-                self.client.create_order(symbol=self.symbol, side=SIDE_SELL, type=ORDER_TYPE_MARKET,
-                                         quantity=self.lastOrder['executedQty'])
+                sell_order = self.client.create_order(symbol=self.symbol, side=SIDE_SELL, type=ORDER_TYPE_MARKET,
+                                                      quantity=self.lastOrder['executedQty'],
+                                                      newOrderRespType=ORDER_RESP_TYPE_RESULT)
                 lastBalance = self.balance
                 self.lastOrder = None
                 self.update_account_balance()
-                print(F"[{datetime.now()}] SELL, P&L: {self.balance - lastBalance}$")
+                pnl = self.balance - lastBalance
+                self.logger.sell_log(sell_order['sell_order'], pnl, self.balance)
 
         except Exception as e:
             print("Error: ", e)
 
     def update_account_balance(self):
         self.balance = self.client.get_asset_balance("USDT")['free']
-        print(F"Account balance: {self.balance}$")
 
     def define_trend(self):
         last_trend = self.trend
@@ -108,14 +105,14 @@ class BinanceBot:
         current_price = self.data["close"].iloc[-1].item()
         percent = ((abs(trend_line - current_price) / current_price) * 100)
         if percent < 0.3:
-            self.trend = RANGE
+            self.trend = SIDEWAYS
         elif trend_line > current_price:
             self.trend = BEARISH
         else:
             self.trend = BULLISH
 
         if last_trend is not self.trend:
-            print(F"Trend change : {TRENDS_NAME[self.trend]}")
+            self.logger.trend_log(last_trend, self.trend)
 
     def initialize_candles(self):
         dates, opens, highs, lows, closes, volumes = [], [], [], [], [], []
@@ -135,7 +132,7 @@ class BinanceBot:
         self.data['close'] = np.array(closes).astype(np.float)
         self.data['volume'] = np.array(volumes).astype(np.float)
         self.calculate_ta()
-        print(F"Successfully loaded {len(self.data)} candles")
+        self.logger.init_log(F"loaded {len(self.data)} candles")
         self.define_trend()
 
     def calculate_ta(self):
@@ -162,21 +159,18 @@ class BinanceBot:
         self.websocket.start_kline_socket(self.symbol, self.kline_callback, self.interval)
 
 
-def run_server(name):
-    print(F"Starting web server on thread {name}")
-    server_address = ('', 8080)
-    httpd = HTTPServer(server_address, BaseHTTPRequestHandler)
-    httpd.serve_forever()
-
-
 if __name__ == '__main__':
-    threading.Thread(target=run_server, args=(1,)).start()
+    global_logger = Logger()
+    http_server = HttpServer(global_logger)
+
+    threading.Thread(target=http_server.start, args=()).start()
 
     bot = BinanceBot(
         os.getenv("BINANCE_KEY"),
         os.getenv("BINANCE_SECRET"),
         "ETHUSDT",
-        KLINE_INTERVAL_15MINUTE
+        KLINE_INTERVAL_15MINUTE,
+        global_logger
     )
 
     bot.start()
