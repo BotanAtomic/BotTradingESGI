@@ -26,7 +26,7 @@ class HttpServer:
 
     def __init__(self, logger):
         self.logger = logger
-        self.http_server = HTTPServer(('0.0.0.0', 80), create_handler(logger))
+        self.http_server = HTTPServer(('0.0.0.0', 8080), create_handler(logger))
 
     def start(self):
         self.logger.init_log("starting http server...")
