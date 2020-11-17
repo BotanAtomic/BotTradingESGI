@@ -30,6 +30,8 @@ class HttpServer:
         port = os.getenv("PORT")
         if port is None:
             port = 8080
+        else:
+            port = int(port)
         self.http_server = HTTPServer(('0.0.0.0', port), create_handler(logger))
 
     def start(self):
