@@ -1,3 +1,4 @@
+import os
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 
@@ -26,7 +27,10 @@ class HttpServer:
 
     def __init__(self, logger):
         self.logger = logger
-        self.http_server = HTTPServer(('0.0.0.0', 8080), create_handler(logger))
+        port = os.getenv("PORT")
+        if port is None:
+            port = 8080
+        self.http_server = HTTPServer(('0.0.0.0', port), create_handler(logger))
 
     def start(self):
         self.logger.init_log("starting http server...")
